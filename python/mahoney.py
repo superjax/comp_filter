@@ -2,11 +2,22 @@
 # license removed for brevity
 import rospy
 import time
-from math import atan2, acos, asin
+from math import atan2, acos, asin, sin, cos, tan
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Vector3
 from geometry_msgs.msg import Quaternion
 import numpy as np
+
+def skewSymmetric(v):
+    v = v[0,:]
+    A =  np.array([ [ 0, -v[2], v[1] ],
+                    [ v[2], 0, -v[0] ],
+                    [-v[1], v[0], 0  ] ])
+    return A
+
+def antiSymmetric(H):
+    A = 1/2.0*(H - H.T)
+    return A
 
 class Controller():
 
@@ -36,96 +47,62 @@ class Controller():
 
 
     def imuCallback(self, msg):
-        dt = time.time() - self.prev_time
+        now = time.time()
+        dt = now - self.prev_time
+        self.prev_time = now
 
-        ax = msg.linear_acceleration.x
-        ay = msg.linear_acceleration.y
-        az = msg.linear_acceleration.z
+        recipNorm = 1/pow(msg.linear_acceleration.x**2 + msg.linear_acceleration.y **2 + msg.linear_acceleration.z **2, 0.5)
 
-        gx = msg.angular_velocity.x
-        gy = msg.angular_velocity.y
-        gz = msg.angular_velocity.z
+        ax = msg.linear_acceleration.x * recipNorm
+        ay = msg.linear_acceleration.y * recipNorm
+        az = msg.linear_acceleration.z * recipNorm
 
-        ex = 0
-        ey = 0
-        ez = 0
+        gx = msg.angular_velocity.x - 0.08512
+        gy = msg.angular_velocity.y + 0.02128
+        gz = msg.angular_velocity.z + 0.029792
 
-        spin_rate = pow(gx**2 + gy**2 + gz**2, 0.5)
+        # Calculate Rotation Matrix from body to inertial given acc measurement
+        v_acc_b = np.array([[ax, ay, az]]).T
+        v_acc_i = np.array([[0, 0, 1]]).T
+        v = skewSymmetric(v_acc_i.T).dot(v_acc_b)
+        s = v.T.dot(v)
+        c = v_acc_i.T.dot(v_acc_i)
 
-        recipNorm = ax**2 + ay**2 + az**2
-        if recipNorm > 0.0:
-            recipNorm = 1/pow(recipNorm,0.5)
-            ax *= recipNorm
-            ay *= recipNorm
-            az *= recipNorm
+        R_meas = np.eye(3) + skewSymmetric(v.T) + skewSymmetric(v.T)**2*(1-c)/(s**2)
+        print(R_meas)
 
-            # calculate error between estimated gravity vector (R) and measured (a*)
-            # This can also be said as the cross product of the gravity vector and the
-            # bottom row of R
-            ex = ay * self.R[2][2] - az * self.R[2][1]
-            ey = az * self.R[2][0] - ax * self.R[2][2]
-            ez = ax * self.R[2][1] - ay * self.R[2][0]
 
-        # Bias estimation (none for now)
-        self.bx = 0
-        self.by = 0
-        self.bz = 0
+        Omega = np.array([[gx, gy, gz]])
 
-        # apply proportional feedback
-        gx += self.kp*ex + self.bx
-        gy += self.kp*ey + self.by
-        gz += self.kp*ez + self.bz
+        omegax = skewSymmetric(Omega)
+        self.R += (omegax.dot(self.R))*dt
 
-        # integrate quaternion
-        gx *= (0.5 * dt)
-        gx *= (0.5 * dt)
-        gx *= (0.5 * dt)
 
-        qa = self.qw
-        qb = self.qx
-        qc = self.qy
-        qd = self.qz
+        # Re-Normalize Rotation
+        # Per Direction Cosine Matrix IMU: Theory
+        # By William Premerlani and Paul Bizard
+        # https://www.google.com/webhp?sourceid=chrome-instant&ion=1&espv=2&ie=UTF-8#q=DCMDraft.pdf
+        x = np.array([self.R[0]])
+        y = np.array([self.R[1]])
+        error = x.dot(y.T)
 
-        self.qw += -qb*gx - qc*gy - qd*gz
-        self.qx += qa*gx + qc*gz - qd*gy
-        self.qy += qa*gy - qb*gz + qd*gx
-        self.qz += qa*gz + qb*gy -qc*gx
+        x = x - error/2*y
+        y = y - error/2*x
+        z = skewSymmetric(x).dot(y.T).T
+        x = 1/2.0*(3-x.dot(x.T))*x
+        y = 1/2.0*(3-y.dot(y.T))*y
+        z = 1/2.0*(3-z.dot(z.T))*z
+        self.R = np.array([x[0,:],
+                           y[0,:],
+                           z[0,:]])
 
-        # normalize quaternion
-        recipNorm = 1/pow(self.qx**2 + self.qy**2 + self.qz**2 + self.qw**2,0.5)
-        self.qw *= recipNorm
-        self.qx *= recipNorm
-        self.qy *= recipNorm
-        self.qz *= recipNorm
-
-        # Compute Rotation Matrix From Quaternion
-        q1q1 = self.qx**2
-        q2q2 = self.qy**2
-        q3q3 = self.qz**2
-
-        q0q1 = self.qw*self.qx
-        q0q2 = self.qw*self.qy
-        q0q3 = self.qw*self.qz
-        q1q2 = self.qx*self.qy
-        q1q3 = self.qx*self.qz
-        q2q3 = self.qy*self.qz
-
-        # self.R[0][0] = 1 - 2*q2q2 - 2*q3q3
-        # self.R[0][1] = 2 * (q1q2 - q0q3)
-        # self.R[0][2] = 2 * (q1q3 + q0q2)
-        #
-        # self.R[1][0] = 2 * (q1q2 + q0q3)
-        # self.R[1][1] = 1 - 2* q1q1- 2*q3q3
-        # self.R[1][2] = 2 * (q2q3 - q0q1)
-
-        self.R[2][0] = 2 * (q1q3 - q0q2)
-        self.R[2][1] = 2 * (q2q3 + q0q1)
-        self.R[2][2] = 1 - 2*q1q1 - 2*q2q2
 
         # extract euler angles
+        # Per "Decomposing a Rotation Matrix - Nghia Ho
+        # http://nghiaho.com/?page_id=846
         roll = atan2(self.R[2][1], self.R[2][2]) * 180/3.14159
-        pitch = (0.5*3.14159 - acos(-self.R[2][0]))*180/3.14159
-        yaw = 0
+        pitch = atan2(-self.R[2][0], pow(self.R[2][1]**2 + self.R[2][2]**2,0.5)) * 180/3.14159
+        yaw = atan2(self.R[1][0], self.R[0][0])* 180/3.14159
 
 
         # Pack up and send command
@@ -135,12 +112,6 @@ class Controller():
         attitude.z = yaw
         self.att_pub_.publish(attitude)
 
-        quat= Quaternion()
-        quat.x = self.qx
-        quat.y = self.qy
-        quat.z = self.qz
-        quat.w = self.qw
-        self.q_pub_.publish(quat)
 
 
 if __name__ == '__main__':
