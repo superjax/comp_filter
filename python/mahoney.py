@@ -36,7 +36,9 @@ class Controller():
 
 
     def imuCallback(self, msg):
-        dt = time.time() - self.prev_time
+        now = time.time()
+        dt = now - self.prev_time
+        self.prev_time = now
 
         ax = msg.linear_acceleration.x
         ay = msg.linear_acceleration.y
@@ -110,13 +112,13 @@ class Controller():
         q1q3 = self.qx*self.qz
         q2q3 = self.qy*self.qz
 
-        # self.R[0][0] = 1 - 2*q2q2 - 2*q3q3
-        # self.R[0][1] = 2 * (q1q2 - q0q3)
-        # self.R[0][2] = 2 * (q1q3 + q0q2)
-        #
-        # self.R[1][0] = 2 * (q1q2 + q0q3)
-        # self.R[1][1] = 1 - 2* q1q1- 2*q3q3
-        # self.R[1][2] = 2 * (q2q3 - q0q1)
+        self.R[0][0] = 1 - 2*q2q2 - 2*q3q3
+        self.R[0][1] = 2 * (q1q2 - q0q3)
+        self.R[0][2] = 2 * (q1q3 + q0q2)
+
+        self.R[1][0] = 2 * (q1q2 + q0q3)
+        self.R[1][1] = 1 - 2* q1q1- 2*q3q3
+        self.R[1][2] = 2 * (q2q3 - q0q1)
 
         self.R[2][0] = 2 * (q1q3 - q0q2)
         self.R[2][1] = 2 * (q2q3 + q0q1)
