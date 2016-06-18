@@ -3,7 +3,7 @@
 import rospy
 import time
 import tf
-from math import atan2, acos, asin
+from math import atan2, acos, asin, cos, sin
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Vector3
 from geometry_msgs.msg import Quaternion
@@ -50,105 +50,30 @@ class Controller():
         q = msg.angular_velocity.y
         r = msg.angular_velocity.z
 
-        qdot = 1.0/2.0*np.array([[0, -p, -q, -r],
-                                 [p, 0, r, -q],
-                                 [q, -r, 0, p],
-                                 [r, q, -q, 0]]).dot(self.quat)
-        self.quat = self.quat + qdot*dt
+        w = np.array([[p, q, r]]).T
+        norm_w = np.linalg.norm(w)
+        if(norm_w > 0):
+            Omega = np.array([[0, -p, -q, -r],
+                              [p, 0, r, -q],
+                              [q, -r, 0, p],
+                              [r, q, -p, 0]])
+
+            # Matrix Exponential Approximation (From Attitude Representation and Kinematic
+            # Propagation for Low-Cost UAVs by Robert T. Casey et al.
+            self.quat = (cos(norm_w*dt/2.0)*np.eye(4)
+                         + 1.0/norm_w*sin(norm_w*dt/2.0)*Omega).dot(self.quat)
 
         # Normalize Quaternion
         recipNorm = 1.0/np.linalg.norm(self.quat)
         self.quat *= recipNorm
 
-
-        # ex = 0
-        # ey = 0
-        # ez = 0
-        #
-        # spin_rate = pow(gx**2 + gy**2 + gz**2, 0.5)
-        #
-        # recipNorm = 0 # ax**2 + ay**2 + az**2
-        # if recipNorm > 0.0:
-        #     recipNorm = 1/pow(recipNorm,0.5)
-        #     ax *= recipNorm
-        #     ay *= recipNorm
-        #     az *= recipNorm
-        #
-        #     # calculate error between estimated gravity vector (R) and measured (a*)
-        #     # This can also be said as the cross product of the gravity vector and the
-        #     # bottom row of R
-        #     ex = ay * self.R[2][2] - az * self.R[2][1]
-        #     ey = az * self.R[2][0] - ax * self.R[2][2]
-        #     ez = ax * self.R[2][1] - ay * self.R[2][0]
-        #
-        # # Bias estimation (none for now)
-        # self.bx = 0
-        # self.by = 0
-        # self.bz = 0
-        #
-        # # # apply proportional feedback
-        # # gx += self.kp*ex + self.bx
-        # # gy += self.kp*ey + self.by
-        # # gz += self.kp*ez + self.bz
-        #
-        # # integrate quaternion
-        # # gx *= (0.5 * dt)
-        # # gx *= (0.5 * dt)
-        # # gx *= (0.5 * dt)
-        #
-        # qa = self.qw
-        # qb = self.qx
-        # qc = self.qy
-        # qd = self.qz
-        #
-        # self.qw += -qb*gx - qc*gy - qd*gz
-        # self.qx += qa*gx + qc*gz - qd*gy
-        # self.qy += qa*gy - qb*gz + qd*gx
-        # self.qz += qa*gz + qb*gy -qc*gx
-        #
-        # # normalize quaternion
-        # recipNorm = 1/pow(self.qx**2 + self.qy**2 + self.qz**2 + self.qw**2,0.5)
-        # self.qw *= recipNorm
-        # self.qx *= recipNorm
-        # self.qy *= recipNorm
-        # self.qz *= recipNorm
-        #
-        # # Compute Rotation Matrix From Quaternion
-        # q1q1 = self.qx**2
-        # q2q2 = self.qy**2
-        # q3q3 = self.qz**2
-        #
-        # q0q1 = self.qw*self.qx
-        # q0q2 = self.qw*self.qy
-        # q0q3 = self.qw*self.qz
-        # q1q2 = self.qx*self.qy
-        # q1q3 = self.qx*self.qz
-        # q2q3 = self.qy*self.qz
-        #
-        # self.R[0][0] = 1 - 2*q2q2 - 2*q3q3
-        # self.R[0][1] = 2 * (q1q2 - q0q3)
-        # self.R[0][2] = 2 * (q1q3 + q0q2)
-        #
-        # self.R[1][0] = 2 * (q1q2 + q0q3)
-        # self.R[1][1] = 1 - 2* q1q1- 2*q3q3
-        # self.R[1][2] = 2 * (q2q3 - q0q1)
-        #
-        # self.R[2][0] = 2 * (q1q3 - q0q2)
-        # self.R[2][1] = 2 * (q2q3 + q0q1)
-        # self.R[2][2] = 1 - 2*q1q1 - 2*q2q2
-        #
-        # # extract euler angles
-        # roll = atan2(self.R[2][1], self.R[2][2]) * 180/3.14159
-        # pitch = atan2(-self.R[2][0], pow(self.R[2][1]**2 + self.R[2][2]**2,0.5)) * 180/3.14159
-        # yaw = atan2(self.R[1][0], self.R[0][0])* 180/3.14159
-
         q0 = self.quat[0]
         q1 = self.quat[1]
         q2 = self.quat[2]
         q3 = self.quat[3]
-        roll  = atan2(2*(q0*q1 + q2*q3), q0**2 - q1**2 - q2**2 + q3**2)
+        roll  = atan2(2*(q0*q1 + q2*q3), 1 - 2*(q1**2 + q2**2))
         pitch = asin(2*(q0*q2 - q3*q1))
-        yaw = atan2(2*(q0*q3 + q1*q2), q0**2 + q1**2 - q2**2 - q3**2)
+        yaw = atan2(2*(q0*q3 + q1*q2),1 - 2*(q2**2 + q3**2))
 
         # Pack up and send command
         attitude = Vector3()
@@ -157,12 +82,7 @@ class Controller():
         attitude.z = yaw
         self.att_pub_.publish(attitude)
 
-        # quat= Quaternion()
-        # quat.x = self.qx
-        # quat.y = self.qy
-        # quat.z = self.qz
-        # quat.w = self.qw
-        # self.q_pub_.publish(quat)
+
 
 
 if __name__ == '__main__':
