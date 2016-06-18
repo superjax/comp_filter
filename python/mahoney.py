@@ -24,8 +24,8 @@ class Controller():
 
         self.quat = np.array([[1, 0, 0, 0]]).T
 
-        self.Omega1 = np.zeros([4,4])
-        self.Omega2 = np.zeros([4,4])
+        self.w1 = np.zeros([1,3])
+        self.w2 = np.zeros([1,3])
 
         self.imu_sub_ = rospy.Subscriber('imu/data', Imu, self.imuCallback, queue_size=5)
         self.att_pub_ = rospy.Publisher('attitude', Vector3, queue_size=5)
@@ -49,24 +49,28 @@ class Controller():
         r = msg.angular_velocity.z
 
         w = np.array([[p, q, r]]).T
-        norm_w = np.linalg.norm(w)
+        wbar = 1/12.0*(-1*self.w2 + 8*self.w1 + 5*w)
+        self.w2 = self.w1
+        self.w1 = wbar
+
+        p = wbar[0,0]
+        q = wbar[0,1]
+        r = wbar[0,2]
+
+        norm_w = np.linalg.norm(wbar)
 
         # calculate quadratic estimate of Omega (see eq. 14, 15 and 16 of reference)
         Omega = np.array([[0, -p, -q, -r],
                               [p, 0, r, -q],
                               [q, -r, 0, p],
                               [r, q, -p, 0]])
-        Omegabar = 1/12.0*(-self.Omega2 + 8*self.Omega1 + 5*Omega)
 
-        # Shift measurements for quaternion estimation
-        self.Omega2 = self.Omega1
-        self.Omega1 = Omega
 
         if norm_w > 0:
             # Matrix Exponential Approximation (From Attitude Representation and Kinematic
             # Propagation for Low-Cost UAVs by Robert T. Casey et al.
             self.quat = (cos(norm_w*dt/2.0)*np.eye(4)
-                         + 1.0/norm_w*sin(norm_w*dt/2.0)*Omegabar).dot(self.quat)
+                         + 1.0/norm_w*sin(norm_w*dt/2.0)*Omega).dot(self.quat)
 
         # Normalize Quaternion
         recipNorm = 1.0/np.linalg.norm(self.quat)
