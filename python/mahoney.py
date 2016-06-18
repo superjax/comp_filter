@@ -24,8 +24,8 @@ class Controller():
 
         self.quat = np.array([[1, 0, 0, 0]]).T
 
-        self.w1 = np.zeros([1,3])
-        self.w2 = np.zeros([1,3])
+        self.w1 = np.zeros([3,1])
+        self.w2 = np.zeros([3,1])
 
         self.imu_sub_ = rospy.Subscriber('imu/data', Imu, self.imuCallback, queue_size=5)
         self.att_pub_ = rospy.Publisher('attitude', Vector3, queue_size=5)
@@ -48,23 +48,24 @@ class Controller():
         q = msg.angular_velocity.y
         r = msg.angular_velocity.z
 
-        w = np.array([[p, q, r]]).T
+        w = np.array([[msg.angular_velocity.x,
+                       msg.angular_velocity.y,
+                       msg.angular_velocity.z]]).T
         wbar = 1/12.0*(-1*self.w2 + 8*self.w1 + 5*w)
         self.w2 = self.w1
         self.w1 = wbar
 
         p = wbar[0,0]
-        q = wbar[0,1]
-        r = wbar[0,2]
+        q = wbar[1,0]
+        r = wbar[2,0]
 
         norm_w = np.linalg.norm(wbar)
 
         # calculate quadratic estimate of Omega (see eq. 14, 15 and 16 of reference)
         Omega = np.array([[0, -p, -q, -r],
-                              [p, 0, r, -q],
-                              [q, -r, 0, p],
-                              [r, q, -p, 0]])
-
+                          [p, 0, r, -q],
+                          [q, -r, 0, p],
+                          [r, q, -p, 0]])
 
         if norm_w > 0:
             # Matrix Exponential Approximation (From Attitude Representation and Kinematic
