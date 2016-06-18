@@ -2,6 +2,7 @@
 # license removed for brevity
 import rospy
 import time
+import tf
 from math import atan2, acos, asin
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Vector3
@@ -21,10 +22,7 @@ class Controller():
 
         self.prev_time = time.time()
 
-        self.qw = 1.0
-        self.qx = 0
-        self.qy = 0
-        self.qz = 0
+        self.quat = np.array([[1, 0, 0, 0]]).T
 
         self.roll = 0
         self.pitch = 0
@@ -48,10 +46,21 @@ class Controller():
         ay = msg.linear_acceleration.y
         az = msg.linear_acceleration.z
 
-        gx = msg.angular_velocity.x
-        gy = msg.angular_velocity.y
-        gz = msg.angular_velocity.z
-        #
+        p = msg.angular_velocity.x
+        q = msg.angular_velocity.y
+        r = msg.angular_velocity.z
+
+        qdot = 1.0/2.0*np.array([[0, -p, -q, -r],
+                                 [p, 0, r, -q],
+                                 [q, -r, 0, p],
+                                 [r, q, -q, 0]]).dot(self.quat)
+        self.quat = self.quat + qdot*dt
+
+        # Normalize Quaternion
+        recipNorm = 1.0/np.linalg.norm(self.quat)
+        self.quat *= recipNorm
+
+
         # ex = 0
         # ey = 0
         # ez = 0
@@ -133,15 +142,19 @@ class Controller():
         # pitch = atan2(-self.R[2][0], pow(self.R[2][1]**2 + self.R[2][2]**2,0.5)) * 180/3.14159
         # yaw = atan2(self.R[1][0], self.R[0][0])* 180/3.14159
 
-        self.roll += gx*dt
-        self.pitch += gy*dt
-        self.yaw += gz*dt
+        q0 = self.quat[0]
+        q1 = self.quat[1]
+        q2 = self.quat[2]
+        q3 = self.quat[3]
+        roll  = atan2(2*(q0*q1 + q2*q3), q0**2 - q1**2 - q2**2 + q3**2)
+        pitch = asin(2*(q0*q2 - q3*q1))
+        yaw = atan2(2*(q0*q3 + q1*q2), q0**2 + q1**2 - q2**2 - q3**2)
 
         # Pack up and send command
         attitude = Vector3()
-        attitude.x = self.roll
-        attitude.y = self.pitch
-        attitude.z = self.yaw
+        attitude.x = roll
+        attitude.y = pitch
+        attitude.z = yaw
         self.att_pub_.publish(attitude)
 
         # quat= Quaternion()
