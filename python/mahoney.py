@@ -2,44 +2,46 @@
 # license removed for brevity
 import rospy
 import time
-from math import atan2, acos, asin, sin, cos, tan
+import tf
+from math import atan2, acos, asin, cos, sin, sqrt
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Vector3
 from geometry_msgs.msg import Quaternion
 import numpy as np
 
-def skewSymmetric(v):
-    v = v[0,:]
-    A =  np.array([ [ 0, -v[2], v[1] ],
-                    [ v[2], 0, -v[0] ],
-                    [-v[1], v[0], 0  ] ])
-    return A
+def quat_multiply(q1, q2):
+    s1 = q1[0,0]
+    s2 = q2[0,0]
 
-def antiSymmetric(H):
-    A = 1/2.0*(H - H.T)
-    return A
+    v1 = q1[1:4]
+    v2 = q2[1:4]
+
+    w = s1*s2 - v1.T.dot(v2)
+    xyz = s1*v2 + s2*v1 - np.cross(v1,v2, axis=0)
+
+    out = np.append(w, xyz, axis=0)
+    return out
 
 class Controller():
 
     def __init__(self):
 
         self.R = np.eye(3)
-        self.kp= 10
+        self.kp= 1 # This should be turned up on initialization, then turned down
+        self.ki = 0.1  # This should be turned up on initialization, then turned down
 
-        self.bx = 0
-        self.by = 0
-        self.bz = 0
-
+        self.b = np.array([[0, 0, 0]]).T
         self.prev_time = time.time()
 
-        self.qw = 1.0
-        self.qx = 0
-        self.qy = 0
-        self.qz = 0
+        self.quat = np.array([[1, 0, 0, 0]]).T
 
+        self.w1 = np.zeros([3,1])
+        self.w2 = np.zeros([3,1])
 
         self.imu_sub_ = rospy.Subscriber('imu/data', Imu, self.imuCallback, queue_size=5)
         self.att_pub_ = rospy.Publisher('attitude', Vector3, queue_size=5)
+        self.error_pub_ = rospy.Publisher('error', Vector3, queue_size=5)
+        self.bias_pub_ = rospy.Publisher('bias', Vector3, queue_size=5)
         self.q_pub_ = rospy.Publisher('quaternion', Quaternion, queue_size=5)
         while not rospy.is_shutdown():
             # wait for new messages and call the callback when they arrive
@@ -51,59 +53,76 @@ class Controller():
         dt = now - self.prev_time
         self.prev_time = now
 
-        recipNorm = 1/pow(msg.linear_acceleration.x**2 + msg.linear_acceleration.y **2 + msg.linear_acceleration.z **2, 0.5)
+        ax = msg.linear_acceleration.x
+        ay = msg.linear_acceleration.y
+        az = msg.linear_acceleration.z
+        a = np.array([[ax, ay, az]]).T
+        I = np.array([[0, 0, 1]]).T
 
-        ax = msg.linear_acceleration.x * recipNorm
-        ay = msg.linear_acceleration.y * recipNorm
-        az = msg.linear_acceleration.z * recipNorm
+        # Pull in Accelerometer, and get attitude measurement
+        norm =  sqrt(ax**2 + ay**2 + az **2)
+        w_meas = np.array([[0, 0, 0]]).T
+        q_tilde = np.array([[1, 0, 0, 0]]).T
+        if norm < 1.15*9.80665 and norm > 0.85*9.80665:
+            # normalize acceleration vector
+            recipNorm = 1.0/np.linalg.norm(a)
+            a *= recipNorm
 
-        gx = msg.angular_velocity.x - 0.08512
-        gy = msg.angular_velocity.y + 0.02128
-        gz = msg.angular_velocity.z + 0.029792
+            # Build w_meas from Mahoney Eq. 47a
+            half = a + I
+            half *= 1.0/np.linalg.norm(half)
+            q_meas = a.T.dot(half)
+            q_meas = np.append(q_meas, np.array([np.cross(a[:,0],half[:,0])]).T, axis=0)
+            q_meas_inverse = q_meas.copy()
+            q_meas_inverse[0,0] *= -1.0
+            q_tilde = quat_multiply(q_meas_inverse,self.quat)
+            s_tilde = q_tilde[0,0]
+            v_tilde = q_tilde[1:4]
+            w_meas = -2*s_tilde*v_tilde
 
-        # Calculate Rotation Matrix from body to inertial given acc measurement
-        v_acc_b = np.array([[ax, ay, az]]).T
-        v_acc_i = np.array([[0, 0, 1]]).T
-        v = skewSymmetric(v_acc_i.T).dot(v_acc_b)
-        s = v.T.dot(v)
-        c = v_acc_i.T.dot(v_acc_i)
+            # Perform Bias Estimator (Eq. 48c), using Euler Integration (assume that it is steady)
+            self.b = self.b.copy() - self.ki*w_meas*dt
 
-        R_meas = np.eye(3) + skewSymmetric(v.T) + skewSymmetric(v.T)**2*(1-c)/(s**2)
-        print(R_meas)
+        # calculate quadratic estimate of omega (see eq. 14, 15 and 16 of reference)
+        w = np.array([[msg.angular_velocity.x,
+                       msg.angular_velocity.y,
+                       msg.angular_velocity.z]]).T
+        wbar = 1/12.0*(-1*self.w2 + 8*self.w1 + 5*w)
+        self.w2 = self.w1
+        self.w1 = wbar
 
+        # This is the vector that is inside the p function in equation 47a of the Mahoney
+        # Paper
+        wfinal = wbar - self.b + self.kp*w_meas
 
-        Omega = np.array([[gx, gy, gz]])
+        p = wfinal[0,0]
+        q = wfinal[1,0]
+        r = wfinal[2,0]
 
-        omegax = skewSymmetric(Omega)
-        self.R += (omegax.dot(self.R))*dt
+        norm_w = np.linalg.norm(wfinal)
 
+        Omega = np.array([[0, -p, -q, -r],
+                          [p, 0, r, -q],
+                          [q, -r, 0, p],
+                          [r, q, -p, 0]])
 
-        # Re-Normalize Rotation
-        # Per Direction Cosine Matrix IMU: Theory
-        # By William Premerlani and Paul Bizard
-        # https://www.google.com/webhp?sourceid=chrome-instant&ion=1&espv=2&ie=UTF-8#q=DCMDraft.pdf
-        x = np.array([self.R[0]])
-        y = np.array([self.R[1]])
-        error = x.dot(y.T)
+        if norm_w > 0:
+            # Matrix Exponential Approximation (From Attitude Representation and Kinematic
+            # Propagation for Low-Cost UAVs by Robert T. Casey et al.
+            self.quat = (cos(norm_w*dt/2.0)*np.eye(4)
+                         + 1.0/norm_w*sin(norm_w*dt/2.0)*Omega).dot(self.quat)
 
-        x = x - error/2*y
-        y = y - error/2*x
-        z = skewSymmetric(x).dot(y.T).T
-        x = 1/2.0*(3-x.dot(x.T))*x
-        y = 1/2.0*(3-y.dot(y.T))*y
-        z = 1/2.0*(3-z.dot(z.T))*z
-        self.R = np.array([x[0,:],
-                           y[0,:],
-                           z[0,:]])
+        # Normalize Quaternion
+        recipNorm = 1.0/np.linalg.norm(self.quat)
+        self.quat *= recipNorm
 
-
-        # extract euler angles
-        # Per "Decomposing a Rotation Matrix - Nghia Ho
-        # http://nghiaho.com/?page_id=846
-        roll = atan2(self.R[2][1], self.R[2][2]) * 180/3.14159
-        pitch = atan2(-self.R[2][0], pow(self.R[2][1]**2 + self.R[2][2]**2,0.5)) * 180/3.14159
-        yaw = atan2(self.R[1][0], self.R[0][0])* 180/3.14159
-
+        q0 = self.quat[0]
+        q1 = self.quat[1]
+        q2 = self.quat[2]
+        q3 = self.quat[3]
+        roll  = atan2(2*(q0*q1 + q2*q3), 1 - 2*(q1**2 + q2**2))
+        pitch = asin(2*(q0*q2 - q3*q1))
+        yaw = atan2(2*(q0*q3 + q1*q2),1 - 2*(q2**2 + q3**2))
 
         # Pack up and send command
         attitude = Vector3()
@@ -112,6 +131,25 @@ class Controller():
         attitude.z = yaw
         self.att_pub_.publish(attitude)
 
+        # Calculate Error from Accel Measurement
+        q0 = q_tilde[0]
+        q1 = q_tilde[1]
+        q2 = q_tilde[2]
+        q3 = q_tilde[3]
+        roll  = atan2(2*(q0*q1 + q2*q3), 1 - 2*(q1**2 + q2**2))
+        pitch = asin(2*(q0*q2 - q3*q1))
+        yaw = atan2(2*(q0*q3 + q1*q2),1 - 2*(q2**2 + q3**2))
+        attitude.x = roll
+        attitude.y = pitch
+        attitude.z = yaw
+        self.error_pub_.publish(attitude)
+
+        # Publish Biases
+        bias = Vector3()
+        bias.x = self.b[0,0]
+        bias.y = self.b[1,0]
+        bias.z = self.b[2,0]
+        self.bias_pub_.publish(bias)
 
 
 if __name__ == '__main__':
