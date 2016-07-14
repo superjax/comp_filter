@@ -7,6 +7,7 @@ from math import atan2, acos, asin, cos, sin, sqrt
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Vector3
 from geometry_msgs.msg import Quaternion
+from nav_msgs.msg import Odometry
 import numpy as np
 
 def quat_multiply(q1, q2):
@@ -38,15 +39,31 @@ class Controller():
         self.w1 = np.zeros([3,1])
         self.w2 = np.zeros([3,1])
 
-        self.imu_sub_ = rospy.Subscriber('imu/data', Imu, self.imuCallback, queue_size=5)
-        self.att_pub_ = rospy.Publisher('attitude', Vector3, queue_size=5)
+        self.imu_sub_ = rospy.Subscriber('/mikey/imu/data', Imu, self.imuCallback, queue_size=5)
+        self.odometry_sub_ = rospy.Subscriber('/mikey/ground_truth/odometry', Odometry, self.odometryCallback, queue_size=5 )
+        self.att_pub_ = rospy.Publisher('estimate', Vector3, queue_size=5)
         self.error_pub_ = rospy.Publisher('error', Vector3, queue_size=5)
         self.bias_pub_ = rospy.Publisher('bias', Vector3, queue_size=5)
         self.q_pub_ = rospy.Publisher('quaternion', Quaternion, queue_size=5)
+        self.truth_pub_ = rospy.Publisher('truth_euler', Vector3, queue_size=5)
         while not rospy.is_shutdown():
             # wait for new messages and call the callback when they arrive
             rospy.spin()
 
+    def odometryCallback(self, msg):
+        quat = msg.pose.pose.orientation
+        q0 = quat.w
+        q1 = quat.y
+        q2 = quat.x
+        q3 = quat.z
+        roll  = atan2(2*(q0*q1 + q2*q3), 1 - 2*(q1**2 + q2**2))
+        pitch = asin(2*(q0*q2 - q3*q1))
+        yaw = atan2(2*(q0*q3 + q1*q2),1 - 2*(q2**2 + q3**2))
+        truth_msg = Vector3()
+        truth_msg.x = -1.0*roll
+        truth_msg.y = pitch
+        truth_msg.z = -1.0*yaw
+        self.truth_pub_.publish(truth_msg)
 
     def imuCallback(self, msg):
         now = time.time()
@@ -57,7 +74,7 @@ class Controller():
         ay = msg.linear_acceleration.y
         az = msg.linear_acceleration.z
         a = np.array([[ax, ay, az]]).T
-        I = np.array([[0, 0, 1]]).T
+        I = np.array([[0, 0, -1]]).T
 
         # Pull in Accelerometer, and get attitude measurement
         norm =  sqrt(ax**2 + ay**2 + az **2)
