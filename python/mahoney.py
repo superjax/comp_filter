@@ -39,8 +39,8 @@ class Controller():
         self.w1 = np.zeros([3,1])
         self.w2 = np.zeros([3,1])
 
-        self.imu_sub_ = rospy.Subscriber('/mikey/imu/data', Imu, self.imuCallback, queue_size=5)
-        self.odometry_sub_ = rospy.Subscriber('/mikey/ground_truth/odometry', Odometry, self.odometryCallback, queue_size=5 )
+        self.imu_sub_ = rospy.Subscriber('imu/data', Imu, self.imuCallback, queue_size=5)
+        self.odometry_sub_ = rospy.Subscriber('ground_truth/odometry', Odometry, self.odometryCallback, queue_size=5 )
         self.att_pub_ = rospy.Publisher('estimate', Vector3, queue_size=5)
         self.error_pub_ = rospy.Publisher('error', Vector3, queue_size=5)
         self.bias_pub_ = rospy.Publisher('bias', Vector3, queue_size=5)
@@ -74,7 +74,7 @@ class Controller():
         ay = msg.linear_acceleration.y
         az = msg.linear_acceleration.z
         a = np.array([[ax, ay, az]]).T
-        I = np.array([[0, 0, -1]]).T
+        I = np.array([[0, 0, 1]]).T
 
         # Pull in Accelerometer, and get attitude measurement
         norm =  sqrt(ax**2 + ay**2 + az **2)
@@ -148,7 +148,7 @@ class Controller():
         attitude.z = yaw
         self.att_pub_.publish(attitude)
 
-        # Calculate Error from Accel Measurement
+        # Publish Accel Error In terms of euler angles
         q0 = q_tilde[0]
         q1 = q_tilde[1]
         q2 = q_tilde[2]

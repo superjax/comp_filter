@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import rospy
 from sensor_msgs.msg import Imu
 import time
@@ -117,4 +119,3 @@ if __name__ == '__main__':
     except:
         rospy.ROSInterruptException
     pass
-
