@@ -35,8 +35,6 @@ class Generate:
         self.gyro_bias = np.array([-.1, .3, 0.0])
         self.accel_bias = np.array([0, 0, 0])
 
-        self.axis = 2
-
         self.R = np.eye(3)
 
         self.imu_pub_ = rospy.Publisher("imu/data", Imu, queue_size=5)
@@ -68,6 +66,9 @@ class Generate:
         k3 = self.dynamics(self.R + dt / 2.0 * k2, p, q, r)
         k4 = self.dynamics(self.R + dt * k3, p, q, r)
         self.R += dt / 6.0 * (k1 + 2 * k2 + 2 * k3 + k4)
+
+        # Constrain rotation matrix to be orthonormal
+        # (This may otherwise drift a bit due to numerical precision imperfections)
         self.R, dummy = np.linalg.qr(self.R)
 
         if now - self.prev_publish_time > 0.01:
@@ -79,7 +80,7 @@ class Generate:
             theta = atan2(-self.R[2,0], sqrt(self.R[2,1]**2 + self.R[2,2]**2))
             psi = atan2(self.R[1,0], self.R[0,0])
 
-            # Get Acceleration Vector
+            # Get Simulated Acceleration and Angular Velocity Vectors
             I = np.array([[0, 0, 9.80665]]).T
             a = self.R.dot(I)
             imu.linear_acceleration.x = a[0,0]
@@ -87,7 +88,7 @@ class Generate:
             imu.linear_acceleration.z = a[2,0]
             imu.angular_velocity.x = p
             imu.angular_velocity.y = q
-            imu.angular_velocity.z = -r
+            imu.angular_velocity.z = r
 
             # Add Noise
             imu.linear_acceleration.x += np.random.normal(0,self.accel_noise,1)[0] + self.accel_bias[0]
@@ -100,17 +101,17 @@ class Generate:
             #Timestamp
             imu.header.stamp = rospy.Time.now()
 
-            # Publish
+            # Publish IMU
             self.imu_pub_.publish(imu)
 
-            # Truth
+            # Publish Truth
             truth = Vector3()
             truth.x = phi
             truth.y = theta
             truth.z = psi
             self.truth_pub_.publish(truth)
 
-
+            # Maybe Publish Quaternion?
 
 if __name__ == '__main__':
     rospy.init_node('imu_sim', anonymous=True)
