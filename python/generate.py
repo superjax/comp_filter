@@ -6,6 +6,7 @@ import time
 from geometry_msgs.msg import Vector3
 from math import sin, cos, atan2, sqrt
 import numpy as np
+from scipy import linalg
 
 def R(phi, theta, psi):
     ct = cos(theta)
@@ -26,7 +27,7 @@ class Generate:
         self.prev_time = time.time()
         self.prev_publish_time = time.time()
         self.start_time = time.time()
-        self.frequency = np.array([0.005, 1, 1])
+        self.frequency = np.array([0.05, 1, 0])
         self.amplitude = np.array([3.14159/2.0*0.005, 3.14159/4.0, 0])
 
         self.accel_noise = 0.1
@@ -42,35 +43,30 @@ class Generate:
 
         while not rospy.is_shutdown():
             self.publish()
+        debug = 1
 
-    def dynamics(self, R, p, q, r):
-        Omega = np.array([[0, -r, q],
-                          [r, 0, p],
-                          [-q, p, 0]])
-        Rdot = R.dot(Omega)
-        return Rdot
+    def skew(self, x):
+        cross = np.array([[0, -x[2][0], x[1][0]],
+                          [x[2][0], 0, -x[0][0]],
+                          [-x[1][0], x[0][0], 0]])
+        return cross
 
 
     def publish(self):
         now = time.time()
         t = now - self.start_time
         dt = now - self.prev_time
+        # dt = 0.01
+        # t = self.prev_time + dt
+        # now = t
         self.prev_time = now
         p = self.amplitude[0] * cos(t * self.frequency[0] * (2 * 3.14159))
         q = self.amplitude[1] * cos(t * self.frequency[1] * (2 * 3.14159))
         r = self.amplitude[2] * cos(t * self.frequency[2] * (2 * 3.14159))
+        w = np.array([[p, q, r]]).T
 
         # Integrate
-        k1 = self.dynamics(self.R, p, q, r)
-        k2 = self.dynamics(self.R + dt / 2.0 * k1, p, q, r)
-        k3 = self.dynamics(self.R + dt / 2.0 * k2, p, q, r)
-        k4 = self.dynamics(self.R + dt * k3, p, q, r)
-        self.R += dt / 6.0 * (k1 + 2 * k2 + 2 * k3 + k4)
-
-        # Constrain rotation matrix to be orthonormal
-        # (This may otherwise drift a bit due to numerical precision imperfections)
-        self.R, dummy = np.linalg.qr(self.R)
-
+        self.R = self.R.dot(linalg.expm(self.skew(w * dt)))
         if now - self.prev_publish_time > 0.01:
             self.prev_publish_time = now
             imu = Imu()
@@ -115,8 +111,6 @@ class Generate:
 
 if __name__ == '__main__':
     rospy.init_node('imu_sim', anonymous=True)
-    try:
-        gen = Generate()
-    except:
-        rospy.ROSInterruptException
+
+    gen = Generate()
     pass
